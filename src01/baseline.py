@@ -316,7 +316,8 @@ try:
             print(f"Epoch {epoch+1:4d}/{TOTAL_EPOCHS} | LR: {current_lr:.6f} | Total: {avg_loss_total:.6f} | Data: {avg_loss_data:.6f} | Phys: {avg_loss_phys:.6f}")
 
         if (epoch + 1) % SAVE_FREQ == 0:
-            model.save_weights(checkpoint_path)
+            # model.save_weights(checkpoint_path)
+            model.save_weights('models/model_checkpoint_epoch{}.weights.h5'.format(epoch+1))
 
 except KeyboardInterrupt:
     print("\n\n⚠️ คุณได้กดหยุดการทำงาน (Interrupted by User)")

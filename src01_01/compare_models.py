@@ -29,7 +29,8 @@ def parse_args():
     parser.add_argument("--data", default="combined_pinn_data.csv", help="Training-domain combined CSV for evaluation")
     parser.add_argument("--pinn-weights", default="parametrized_pinn_model.weights.h5", help="PINN model weights")
     parser.add_argument("--nn-weights", default="traditional_nn_model.weights.h5", help="Traditional NN model weights")
-    parser.add_argument("--norm", default="normalization_stats.npz", help="Normalization stats file")
+    parser.add_argument("--pinn-norm", default="normalization_pinn_stats.npz", help="PINN Normalization stats file")
+    parser.add_argument("--nn-norm", default="normalization_nn_stats.npz", help="Traditional NN Normalization stats file")
     parser.add_argument("--fan-speed", type=float, default=1.0, help="Fan speed for sensor validation")
     return parser.parse_args()
 
@@ -43,15 +44,23 @@ def evaluate_model(model, X_norm, Y_true):
 def main():
     args = parse_args()
 
-    # Load data and normalization stats
+    # Load data and raw arrays
     arrays = load_training_arrays(args.data)
     X_raw = arrays["X_raw"]
-    X_norm = arrays["X_norm"]
     U_raw = arrays["U_raw"]
     V_raw = arrays["V_raw"]
     W_raw = arrays["W_raw"]
     P_raw = arrays["P_raw"]
-    X_min, X_range = load_normalization_stats(args.norm)
+
+    # Load normalization stats for PINN and Traditional NN
+    pinn_X_min, pinn_X_range = load_normalization_stats(args.pinn_norm)
+    nn_X_min, nn_X_range = load_normalization_stats(args.nn_norm)
+
+    # For overall model evaluation (MSE), we need a consistent normalization.
+    # Let's use the NN's normalization for this general evaluation.
+    X_norm_for_nn_eval = normalize_inputs(X_raw, nn_X_min, nn_X_range)
+    X_norm_for_pinn_eval = normalize_inputs(X_raw, pinn_X_min, pinn_X_range)
+
 
     Y_true_all = tf.concat([U_raw, V_raw, W_raw, P_raw], axis=1)
 
@@ -65,11 +74,11 @@ def main():
     nn_model.load_weights(args.nn_weights)
 
     print("--- Evaluating PINN ---")
-    pinn_preds, pinn_mse = evaluate_model(pinn_model, X_norm, Y_true_all)
+    pinn_preds, pinn_mse = evaluate_model(pinn_model, X_norm_for_pinn_eval, Y_true_all)
     print(f"PINN Total MSE: {pinn_mse:.6f}")
 
     print("\n--- Evaluating Traditional NN ---")
-    nn_preds, nn_mse = evaluate_model(nn_model, X_norm, Y_true_all)
+    nn_preds, nn_mse = evaluate_model(nn_model, X_norm_for_nn_eval, Y_true_all)
     print(f"Traditional NN Total MSE: {nn_mse:.6f}")
 
     # --- Sensor Validation Comparison ---
@@ -87,15 +96,16 @@ def main():
 
     results = []
     for name, coords in DEFAULT_SENSORS.items():
-        sensor_point_raw = np.array([[coords[0], coords[1], coords[2], args.fan_speed]], dtype=tf.float32)
-        sensor_point_norm = normalize_inputs(sensor_point_raw, X_min, X_range)
+        sensor_point_raw = np.array([[coords[0], coords[1], coords[2], args.fan_speed]], dtype=np.float32)
 
         # PINN prediction
-        pinn_pred_components = predict_velocity_components(pinn_model, sensor_point_norm, batch_size=1)
+        sensor_point_norm_pinn = normalize_inputs(sensor_point_raw, pinn_X_min, pinn_X_range)
+        pinn_pred_components = predict_velocity_components(pinn_model, sensor_point_norm_pinn, batch_size=1)
         pinn_pred_vel = velocity_magnitude(pinn_pred_components[:, 0], pinn_pred_components[:, 1], pinn_pred_components[:, 2])[0]
 
         # NN prediction
-        nn_pred_components = nn_model.predict(sensor_point_norm, verbose=0)
+        sensor_point_norm_nn = normalize_inputs(sensor_point_raw, nn_X_min, nn_X_range)
+        nn_pred_components = nn_model.predict(sensor_point_norm_nn, verbose=0)
         nn_pred_vel = velocity_magnitude(nn_pred_components[:, 0], nn_pred_components[:, 1], nn_pred_components[:, 2])[0]
 
         # CFD actual velocity
@@ -107,10 +117,16 @@ def main():
 
         # Calculate errors
         pinn_abs_error = abs(pinn_pred_vel - actual_vel_cfd)
-        pinn_error_percent = (pinn_abs_error / actual_vel_cfd) * 100 if actual_vel_cfd > 0.01 else 0.0
+        if actual_vel_cfd > 0.01:
+            pinn_error_percent = (pinn_abs_error / actual_vel_cfd) * 100
+        else:
+            pinn_error_percent = "N/A"
 
         nn_abs_error = abs(nn_pred_vel - actual_vel_cfd)
-        nn_error_percent = (nn_abs_error / actual_vel_cfd) * 100 if actual_vel_cfd > 0.01 else 0.0
+        if actual_vel_cfd > 0.01:
+            nn_error_percent = (nn_abs_error / actual_vel_cfd) * 100
+        else:
+            nn_error_percent = "N/A"
 
         results.append({
             "Sensor Name": name,
